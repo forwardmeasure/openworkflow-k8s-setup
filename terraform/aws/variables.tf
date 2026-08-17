@@ -28,6 +28,16 @@ variable "cluster_endpoint_public_access_cidrs" {
   }
 }
 
+variable "cluster_administrator_principal_arns" {
+  description = "Durable IAM role ARNs granted EKS cluster-administrator access."
+  type        = set(string)
+
+  validation {
+    condition     = length(var.cluster_administrator_principal_arns) > 0
+    error_message = "At least one durable EKS administrator IAM role ARN must be supplied."
+  }
+}
+
 variable "kubernetes_version" {
   type    = string
   default = "1.34"
@@ -45,7 +55,7 @@ variable "workload_instance_types" {
 
 variable "single_nat_gateway" {
   type    = bool
-  default = true
+  default = false
 }
 
 variable "deletion_protection" {
@@ -53,25 +63,46 @@ variable "deletion_protection" {
   default = true
 }
 
+variable "skip_final_snapshot" {
+  description = "Skip the final RDS snapshot on destruction. Keep false outside disposable environments."
+  type        = bool
+  default     = false
+}
+
 variable "databases" {
-  description = "RDS instances and initial databases. RDS exposes only one control-plane-created database/user per instance."
+  description = "RDS instances, migration administrators, and least-privilege runtime roles created later by the database-migration service."
   type = map(object({
-    database_name     = string
-    username          = string
-    instance_class    = optional(string, "db.m7g.large")
-    allocated_storage = optional(number, 100)
-    multi_az          = optional(bool, false)
+    database_name          = string
+    administrator_username = string
+    runtime_username       = string
+    instance_class         = optional(string, "db.m7g.large")
+    allocated_storage      = optional(number, 100)
+    multi_az               = optional(bool, true)
   }))
   default = {
     kafka_streams = {
-      database_name = "openworkflow_kafka_streams"
-      username      = "openworkflow_kafka"
+      database_name          = "openworkflow_kafka_streams"
+      administrator_username = "openworkflow_kafka_migration"
+      runtime_username       = "openworkflow_kafka"
     }
     actor_engine = {
-      database_name = "openworkflow_actor_engine"
-      username      = "openworkflow_actor"
+      database_name          = "openworkflow_actor_engine"
+      administrator_username = "openworkflow_actor_migration"
+      runtime_username       = "openworkflow_actor"
     }
   }
+}
+
+variable "workload_identities" {
+  description = "IRSA roles to create for Kubernetes service accounts owned by the downstream deployment layer."
+  type = map(object({
+    namespace                   = string
+    service_account             = string
+    bucket_keys                 = optional(set(string), [])
+    administrator_database_keys = optional(set(string), [])
+    runtime_database_keys       = optional(set(string), [])
+  }))
+  default = {}
 }
 
 variable "buckets" {

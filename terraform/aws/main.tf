@@ -45,9 +45,24 @@ module "eks" {
   endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
   enable_irsa                              = true
-  enable_cluster_creator_admin_permissions = true
+  enable_cluster_creator_admin_permissions = false
+  deletion_protection                      = var.deletion_protection
   vpc_id                                   = module.vpc.vpc_id
   subnet_ids                               = module.vpc.private_subnets
+
+  access_entries = {
+    for principal_arn in var.cluster_administrator_principal_arns : replace(principal_arn, "/", "-") => {
+      principal_arn = principal_arn
+      policy_associations = {
+        administrator = {
+          policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  }
 
   addons = {
     coredns            = {}
@@ -105,10 +120,32 @@ resource "aws_security_group" "postgres" {
   }
 }
 
-resource "random_password" "database" {
+resource "random_password" "database_runtime" {
   for_each = var.databases
-  length   = 32
+  length   = 40
   special  = false
+}
+
+resource "random_id" "final_snapshot" {
+  for_each    = var.databases
+  byte_length = 4
+}
+
+resource "aws_db_parameter_group" "platform" {
+  for_each = var.databases
+
+  name_prefix = "${var.name}-${replace(each.key, "_", "-")}-"
+  family      = "postgres17"
+
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "immediate"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "aws_db_instance" "platform" {
@@ -124,12 +161,13 @@ resource "aws_db_instance" "platform" {
   storage_type          = "gp3"
   storage_encrypted     = true
 
-  db_name  = each.value.database_name
-  username = each.value.username
-  password = random_password.database[each.key].result
-  port     = 5432
+  db_name                     = each.value.database_name
+  username                    = each.value.administrator_username
+  manage_master_user_password = true
+  port                        = 5432
 
   db_subnet_group_name   = module.vpc.database_subnet_group_name
+  parameter_group_name   = aws_db_parameter_group.platform[each.key].name
   vpc_security_group_ids = [aws_security_group.postgres.id]
   publicly_accessible    = false
   multi_az               = each.value.multi_az
@@ -139,8 +177,8 @@ resource "aws_db_instance" "platform" {
   maintenance_window         = "sun:05:00-sun:06:00"
   auto_minor_version_upgrade = true
   deletion_protection        = var.deletion_protection
-  skip_final_snapshot        = !var.deletion_protection
-  final_snapshot_identifier  = var.deletion_protection ? substr("${var.name}-${replace(each.key, "_", "-")}-final", 0, 63) : null
+  skip_final_snapshot        = var.skip_final_snapshot
+  final_snapshot_identifier  = var.skip_final_snapshot ? null : substr("${var.name}-${replace(each.key, "_", "-")}-final-${random_id.final_snapshot[each.key].hex}", 0, 63)
   copy_tags_to_snapshot      = true
 }
 
@@ -151,6 +189,20 @@ resource "aws_s3_bucket" "platform" {
   tags          = merge({ Purpose = each.key }, each.value.tags)
 }
 
+resource "aws_secretsmanager_secret" "database_runtime" {
+  for_each = var.databases
+
+  name                    = "${var.name}/${replace(each.key, "_", "-")}/runtime"
+  recovery_window_in_days = 30
+}
+
+resource "aws_secretsmanager_secret_version" "database_runtime" {
+  for_each = var.databases
+
+  secret_id     = aws_secretsmanager_secret.database_runtime[each.key].id
+  secret_string = random_password.database_runtime[each.key].result
+}
+
 resource "aws_s3_bucket_public_access_block" "platform" {
   for_each                = aws_s3_bucket.platform
   bucket                  = each.value.id
@@ -158,6 +210,36 @@ resource "aws_s3_bucket_public_access_block" "platform" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+data "aws_iam_policy_document" "bucket_tls" {
+  for_each = aws_s3_bucket.platform
+
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    resources = [
+      each.value.arn,
+      "${each.value.arn}/*",
+    ]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "tls" {
+  for_each = aws_s3_bucket.platform
+
+  bucket = each.value.id
+  policy = data.aws_iam_policy_document.bucket_tls[each.key].json
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "platform" {
@@ -199,5 +281,148 @@ resource "aws_s3_bucket_lifecycle_configuration" "platform" {
         noncurrent_days = noncurrent_version_expiration.value
       }
     }
+  }
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  count = length(var.buckets) > 0 ? 1 : 0
+
+  vpc_id            = module.vpc.vpc_id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = module.vpc.private_route_table_ids
+}
+
+data "aws_iam_policy_document" "workload_assume_role" {
+  for_each = var.workload_identities
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(module.eks.cluster_oidc_issuer_url, "https://", "")}:sub"
+      values   = ["system:serviceaccount:${each.value.namespace}:${each.value.service_account}"]
+    }
+  }
+}
+
+resource "aws_iam_role" "workload" {
+  for_each = var.workload_identities
+
+  name               = substr("${var.name}-${replace(each.key, "_", "-")}", 0, 64)
+  assume_role_policy = data.aws_iam_policy_document.workload_assume_role[each.key].json
+}
+
+data "aws_iam_policy_document" "workload_bucket" {
+  for_each = { for key, value in var.workload_identities : key => value if length(value.bucket_keys) > 0 }
+
+  statement {
+    sid       = "ListBuckets"
+    effect    = "Allow"
+    actions   = ["s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads"]
+    resources = [for key in each.value.bucket_keys : aws_s3_bucket.platform[key].arn]
+  }
+  statement {
+    sid     = "ManageObjects"
+    effect  = "Allow"
+    actions = ["s3:AbortMultipartUpload", "s3:DeleteObject", "s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"]
+    resources = [
+      for key in each.value.bucket_keys : "${aws_s3_bucket.platform[key].arn}/*"
+    ]
+  }
+}
+
+resource "aws_iam_policy" "workload_bucket" {
+  for_each = data.aws_iam_policy_document.workload_bucket
+
+  name   = substr("${var.name}-${replace(each.key, "_", "-")}-object-storage", 0, 128)
+  policy = each.value.json
+}
+
+resource "aws_iam_role_policy_attachment" "workload_bucket" {
+  for_each = aws_iam_policy.workload_bucket
+
+  role       = aws_iam_role.workload[each.key].name
+  policy_arn = each.value.arn
+}
+
+data "aws_iam_policy_document" "workload_database_secret" {
+  for_each = {
+    for key, value in var.workload_identities : key => value
+    if length(value.administrator_database_keys) > 0 || length(value.runtime_database_keys) > 0
+  }
+
+  statement {
+    sid     = "ReadDatabaseCredentials"
+    effect  = "Allow"
+    actions = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
+    resources = concat(
+      [
+        for key in each.value.administrator_database_keys : aws_db_instance.platform[key].master_user_secret[0].secret_arn
+      ],
+      [
+        for key in each.value.runtime_database_keys : aws_secretsmanager_secret.database_runtime[key].arn
+      ]
+    )
+  }
+}
+
+resource "aws_iam_policy" "workload_database_secret" {
+  for_each = data.aws_iam_policy_document.workload_database_secret
+
+  name   = substr("${var.name}-${replace(each.key, "_", "-")}-database-secrets", 0, 128)
+  policy = each.value.json
+}
+
+resource "aws_iam_role_policy_attachment" "workload_database_secret" {
+  for_each = aws_iam_policy.workload_database_secret
+
+  role       = aws_iam_role.workload[each.key].name
+  policy_arn = each.value.arn
+}
+
+check "database_names_are_unique" {
+  assert {
+    condition     = length(distinct([for database in values(var.databases) : database.database_name])) == length(var.databases)
+    error_message = "Each logical database must have a unique PostgreSQL database name."
+  }
+}
+
+check "database_runtime_users_are_unique" {
+  assert {
+    condition     = length(distinct([for database in values(var.databases) : database.runtime_username])) == length(var.databases)
+    error_message = "Each logical database must have a unique runtime username."
+  }
+}
+
+check "workload_bucket_keys_exist" {
+  assert {
+    condition = alltrue(flatten([
+      for identity in values(var.workload_identities) : [
+        for bucket_key in identity.bucket_keys : contains(keys(var.buckets), bucket_key)
+      ]
+    ]))
+    error_message = "Every workload identity bucket key must identify a declared bucket."
+  }
+}
+
+check "workload_database_keys_exist" {
+  assert {
+    condition = alltrue(flatten([
+      for identity in values(var.workload_identities) : [
+        for database_key in setunion(identity.administrator_database_keys, identity.runtime_database_keys) : contains(keys(var.databases), database_key)
+      ]
+    ]))
+    error_message = "Every workload identity database key must identify a declared database."
   }
 }

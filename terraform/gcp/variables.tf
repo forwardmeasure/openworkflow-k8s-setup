@@ -53,6 +53,16 @@ variable "master_authorized_networks" {
   }
 }
 
+variable "cluster_administrator_members" {
+  description = "Google IAM members granted Kubernetes Engine administrator access, for example group:platform@example.com."
+  type        = set(string)
+
+  validation {
+    condition     = length(var.cluster_administrator_members) > 0
+    error_message = "At least one durable GKE administrator IAM member must be supplied."
+  }
+}
+
 variable "system_machine_type" {
   type    = string
   default = "e2-standard-4"
@@ -65,12 +75,12 @@ variable "workload_machine_type" {
 
 variable "system_node_count" {
   type    = number
-  default = 1
+  default = 3
 }
 
 variable "workload_node_count" {
   type    = number
-  default = 1
+  default = 3
 }
 
 variable "cloudsql_tier" {
@@ -85,7 +95,7 @@ variable "cloudsql_disk_size_gb" {
 
 variable "cloudsql_high_availability" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "deletion_protection" {
@@ -94,21 +104,39 @@ variable "deletion_protection" {
 }
 
 variable "databases" {
-  description = "PostgreSQL databases and login users created for OpenWorkflow runtimes."
+  description = "PostgreSQL databases and the least-privilege runtime roles that the downstream database-migration service must create."
   type = map(object({
-    database = string
-    username = string
+    database         = string
+    runtime_username = string
   }))
   default = {
     kafka_streams = {
-      database = "openworkflow_kafka_streams"
-      username = "openworkflow_kafka"
+      database         = "openworkflow_kafka_streams"
+      runtime_username = "openworkflow_kafka"
     }
     actor_engine = {
-      database = "openworkflow_actor_engine"
-      username = "openworkflow_actor"
+      database         = "openworkflow_actor_engine"
+      runtime_username = "openworkflow_actor"
     }
   }
+}
+
+variable "database_administrator_username" {
+  description = "Cloud SQL administrator used only by database migration and runtime-role provisioning."
+  type        = string
+  default     = "openworkflow_migration"
+}
+
+variable "workload_identities" {
+  description = "Cloud IAM identities to create for Kubernetes service accounts owned by the downstream deployment layer."
+  type = map(object({
+    namespace                   = string
+    service_account             = string
+    bucket_keys                 = optional(set(string), [])
+    administrator_database_keys = optional(set(string), [])
+    runtime_database_keys       = optional(set(string), [])
+  }))
+  default = {}
 }
 
 variable "buckets" {

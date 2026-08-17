@@ -4,11 +4,34 @@ locals {
     "container.googleapis.com",
     "iam.googleapis.com",
     "servicenetworking.googleapis.com",
+    "secretmanager.googleapis.com",
     "sqladmin.googleapis.com",
     "storage.googleapis.com",
   ])
   pods_range_name     = "${var.name}-pods"
   services_range_name = "${var.name}-services"
+  workload_bucket_bindings = {
+    for binding in flatten([
+      for identity_key, identity in var.workload_identities : [
+        for bucket_key in identity.bucket_keys : {
+          key          = "${identity_key}:${bucket_key}"
+          identity_key = identity_key
+          bucket_key   = bucket_key
+        }
+      ]
+    ]) : binding.key => binding
+  }
+  workload_runtime_secret_bindings = {
+    for binding in flatten([
+      for identity_key, identity in var.workload_identities : [
+        for database_key in identity.runtime_database_keys : {
+          key          = "${identity_key}:${database_key}"
+          identity_key = identity_key
+          database_key = database_key
+        }
+      ]
+    ]) : binding.key => binding
+  }
 }
 
 resource "google_project_service" "required" {
@@ -81,6 +104,14 @@ resource "google_project_iam_member" "gke_nodes" {
   project = var.project_id
   role    = each.value
   member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+}
+
+resource "google_project_iam_member" "gke_administrators" {
+  for_each = var.cluster_administrator_members
+
+  project = var.project_id
+  role    = "roles/container.admin"
+  member  = each.value
 }
 
 resource "google_container_cluster" "platform" {
@@ -228,6 +259,7 @@ resource "google_sql_database_instance" "platform" {
     ip_configuration {
       ipv4_enabled    = false
       private_network = google_compute_network.platform.id
+      ssl_mode        = "ENCRYPTED_ONLY"
     }
     backup_configuration {
       enabled                        = true
@@ -250,18 +282,58 @@ resource "google_sql_database" "platform" {
   name     = each.value.database
 }
 
-resource "random_password" "database" {
+resource "random_password" "database_administrator" {
+  length  = 40
+  special = false
+}
+
+resource "google_sql_user" "database_administrator" {
+  project  = var.project_id
+  instance = google_sql_database_instance.platform.name
+  name     = var.database_administrator_username
+  password = random_password.database_administrator.result
+}
+
+resource "random_password" "database_runtime" {
   for_each = var.databases
-  length   = 32
+  length   = 40
   special  = false
 }
 
-resource "google_sql_user" "platform" {
+resource "google_secret_manager_secret" "database_administrator" {
+  project   = var.project_id
+  secret_id = "${var.name}-database-administrator"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "database_administrator" {
+  secret      = google_secret_manager_secret.database_administrator.id
+  secret_data = random_password.database_administrator.result
+}
+
+resource "google_secret_manager_secret" "database_runtime" {
   for_each = var.databases
-  project  = var.project_id
-  instance = google_sql_database_instance.platform.name
-  name     = each.value.username
-  password = random_password.database[each.key].result
+
+  project   = var.project_id
+  secret_id = "${var.name}-${replace(each.key, "_", "-")}-runtime"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "database_runtime" {
+  for_each = var.databases
+
+  secret      = google_secret_manager_secret.database_runtime[each.key].id
+  secret_data = random_password.database_runtime[each.key].result
 }
 
 resource "google_storage_bucket" "platform" {
@@ -283,5 +355,86 @@ resource "google_storage_bucket" "platform" {
       retention_period = retention_policy.value * 86400
       is_locked        = false
     }
+  }
+}
+
+resource "google_service_account" "workload" {
+  for_each = var.workload_identities
+
+  project      = var.project_id
+  account_id   = substr("${var.name}-${replace(each.key, "_", "-")}", 0, 30)
+  display_name = "${var.name} ${each.key} workload"
+}
+
+resource "google_service_account_iam_member" "workload_identity" {
+  for_each = var.workload_identities
+
+  service_account_id = google_service_account.workload[each.key].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${var.project_id}.svc.id.goog[${each.value.namespace}/${each.value.service_account}]"
+}
+
+resource "google_storage_bucket_iam_member" "workload" {
+  for_each = local.workload_bucket_bindings
+
+  bucket = google_storage_bucket.platform[each.value.bucket_key].name
+  role   = "roles/storage.objectUser"
+  member = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "workload_database_administrator" {
+  for_each = {
+    for key, value in var.workload_identities : key => value
+    if length(value.administrator_database_keys) > 0
+  }
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.database_administrator.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload[each.key].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "workload_database_runtime" {
+  for_each = local.workload_runtime_secret_bindings
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.database_runtime[each.value.database_key].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
+}
+
+check "database_names_are_unique" {
+  assert {
+    condition     = length(distinct([for database in values(var.databases) : database.database])) == length(var.databases)
+    error_message = "Each logical database must have a unique PostgreSQL database name."
+  }
+}
+
+check "database_runtime_users_are_unique" {
+  assert {
+    condition     = length(distinct([for database in values(var.databases) : database.runtime_username])) == length(var.databases)
+    error_message = "Each logical database must have a unique runtime username."
+  }
+}
+
+check "workload_bucket_keys_exist" {
+  assert {
+    condition = alltrue(flatten([
+      for identity in values(var.workload_identities) : [
+        for bucket_key in identity.bucket_keys : contains(keys(var.buckets), bucket_key)
+      ]
+    ]))
+    error_message = "Every workload identity bucket key must identify a declared bucket."
+  }
+}
+
+check "workload_database_keys_exist" {
+  assert {
+    condition = alltrue(flatten([
+      for identity in values(var.workload_identities) : [
+        for database_key in setunion(identity.administrator_database_keys, identity.runtime_database_keys) : contains(keys(var.databases), database_key)
+      ]
+    ]))
+    error_message = "Every workload identity database key must identify a declared database."
   }
 }
