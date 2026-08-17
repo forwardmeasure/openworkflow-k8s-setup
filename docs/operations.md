@@ -1,40 +1,41 @@
 # Operations
 
-## State and secrets
+## Prepare
 
-Configure a remote OpenTofu backend in `terraform/gcp/backend.tf` (kept
-environment-specific) before the first shared deployment. The generated
-database and Keycloak passwords are sensitive but are stored in state so that
-Cloud SQL users and Secret Manager versions stay consistent. Limit state access
-to platform operators and enable object versioning and retention.
+Choose one cloud and copy its example variables file:
 
-Never commit `terraform.tfvars`, generated Helmfile values, kubeconfigs, plans,
-or state. The repository ignore rules cover their standard locations.
+```bash
+cp terraform/aws/terraform.example.tfvars terraform/aws/terraform.tfvars
+```
 
-## DNS and certificates
+Replace the documentation-only operator CIDR with the public CIDR used by administrators or CI. Keep real `terraform.tfvars`, plans, and state out of Git.
 
-After `make infra-apply`, read the `gateway_ip` output and create records for:
+Configure an encrypted remote state backend before a shared or production deployment. Generated database passwords are stored in state even though their outputs are marked sensitive.
 
-- `auth.<root-domain>`
-- each OpenWorkflow tenant/API hostname
+## Validate and deploy
 
-Point them at the reserved address. Bootstrap first with Let's Encrypt staging.
-Inspect `Certificate/platform-tls` and only then switch `acme_server` to
-`https://acme-v02.api.letsencrypt.org/directory`.
+```bash
+make fmt
+make validate-all
+make CLOUD=aws infra-init
+make CLOUD=aws infra-plan
+make CLOUD=aws infra-apply
+make CLOUD=aws outputs
+make CLOUD=aws kubeconfig
+```
 
-## Upgrades
+The plan is saved inside the selected cloud directory. `infra-apply` applies that reviewed plan rather than producing a new one.
 
-Upgrade one layer at a time: Gateway API CRDs, cert-manager, Istio base/control
-plane, External Secrets, monitoring, Strimzi, Kafka, Keycloak, and finally
-OpenWorkflow runtimes. Run `make bootstrap-diff`, read upstream upgrade notes,
-take database backups, and validate both engines between stateful upgrades.
+## Hand-off to deployment automation
 
-The versions live in `bootstrap/environments/base.yaml`; provider versions live
-in `terraform/gcp/versions.tf`.
+Read the logical database and bucket maps from outputs. Do not commit sensitive output values. The cluster bootstrap/deployment layer is responsible for:
 
-## Recovery
+- creating namespaces and Kubernetes service accounts;
+- installing cluster-wide controllers and platform services;
+- granting workload identities access to cloud resources;
+- placing connection values in its chosen secret-management system;
+- deploying either OpenWorkflow implementation.
 
-Cloud SQL backups and point-in-time recovery are enabled by default. A complete
-recovery test also needs export/restore procedures for Keycloak, Kafka topics,
-and application databases. Strimzi PVCs are not a backup; add a provider object
-storage backup design before treating the platform as production-ready.
+## Destruction
+
+Production-oriented deletion protection is enabled by default where the provider exposes it. Example files may disable it for disposable environments. Inspect database snapshots, object retention policies, and bucket contents before destroying a stack; object-storage `force_destroy` remains false unless explicitly enabled.

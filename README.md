@@ -1,68 +1,43 @@
-# OpenWorkflow Kubernetes setup
+# OpenWorkflow Kubernetes infrastructure
 
-This repository provisions a production-shaped Kubernetes platform on which
-both OpenWorkflow implementations can be installed independently:
+OpenTofu stacks for the cloud infrastructure shared by the OpenWorkflow Kafka Streams and actor-engine implementations.
 
-- `openworkflow-kafka-streams`
-- `openworkflow-actor-engine`
+## Scope
 
-GCP/GKE is the first provider implementation. The portable bootstrap installs
-Gateway API, cert-manager, Istio, External Secrets Operator, Keycloak, Strimzi,
-and (optionally) the Prometheus operator stack. AWS/EKS and Azure/AKS can add
-provider stacks without duplicating the bootstrap.
+This repository creates only:
 
-## Ownership boundary
+- a managed Kubernetes cluster and its network;
+- managed PostgreSQL capacity, initial databases, and login credentials;
+- explicitly configured object-storage buckets or containers.
 
-| Layer | Owner | Contents |
-|---|---|---|
-| Cloud infrastructure | `terraform/<provider>` | Network, cluster, managed PostgreSQL, cloud identity, secret containers, public IP |
-| Cluster bootstrap | `bootstrap` | Operators, CRDs, identity provider, Kafka, TLS issuer, shared Gateway |
-| Runtime | OpenWorkflow repositories | Engine charts, migrations, application policies, runtime images |
+It deliberately does **not** install namespaces, CRDs, operators, Helm releases, Istio, cert-manager, Keycloak, Kafka, application secrets, or either OpenWorkflow runtime. Those belong in a separate cluster-bootstrap or application-deployment layer.
 
-Terraform state and credentials are deliberately excluded from this repository.
-Use a remote, encrypted state backend before sharing an environment.
+## Clouds
 
-## GCP quick start
+| Cloud | Kubernetes | PostgreSQL | Object storage |
+| --- | --- | --- | --- |
+| GCP | GKE | Cloud SQL | GCS |
+| AWS | EKS | RDS | S3 |
+| Azure | AKS | PostgreSQL Flexible Server | Blob containers |
 
-Prerequisites: OpenTofu 1.8+, `gcloud`, `kubectl`, Helm 3.15+, Helmfile 1.x,
-`jq`, and `yq` v4. Authenticate Application Default Credentials and select a
-GCP project with billing enabled.
+The GCP stack uses one Cloud SQL instance with a database and login per runtime. RDS and Azure create one server per runtime because their infrastructure APIs expose only the initial database and administrator login during server creation. No SQL or Kubernetes provisioner is used.
+
+Buckets are opt-in (`buckets = {}` by default). Neither OpenWorkflow implementation currently defines a required object-storage layout, so the repository does not invent one.
+
+## Usage
+
+Prerequisites are OpenTofu 1.8+, the selected cloud CLI, cloud credentials, and `kubectl`.
 
 ```bash
 cp terraform/gcp/terraform.example.tfvars terraform/gcp/terraform.tfvars
-# Edit terraform.tfvars. In particular set project_id, root_domain and
-# acme_email, and decide whether deletion protection is appropriate.
-
-make infra-init
-make infra-plan
-make infra-apply
-make kubeconfig
-make bootstrap
-make verify
+make CLOUD=gcp infra-init
+make CLOUD=gcp infra-plan
+make CLOUD=gcp infra-apply
+make CLOUD=gcp kubeconfig
 ```
 
-`make bootstrap` installs the pinned standard Gateway API CRDs first, exports
-non-secret Terraform outputs to a generated Helmfile environment, and then
-syncs the platform releases in dependency order.
+Replace `gcp` with `aws` or `azure` for the other stacks. Review the plan carefully: these modules create billable resources and their examples disable or reduce some production safeguards.
 
-The default issuer is Let's Encrypt staging. Set `acme_server` to the production
-endpoint only after DNS points at `gateway_ip` and staging certificate issuance
-works. Terraform does not create DNS records because authoritative DNS may be
-outside the cluster project.
+Each stack exports cluster details, private database endpoints, database names, usernames, generated passwords, and bucket names. Passwords are sensitive OpenTofu outputs but remain in state, so use an encrypted remote state backend with tightly restricted access.
 
-After bootstrap, see [workloads/README.md](workloads/README.md) for deploying
-either engine. Architecture decisions and the multi-cloud seam are described in
-[docs/architecture.md](docs/architecture.md).
-
-## Useful commands
-
-```bash
-make validate             # offline Terraform validation plus chart linting
-make bootstrap-diff       # show Helmfile changes
-make outputs              # cloud and workload contract outputs
-make verify               # cluster readiness checks
-```
-
-There is intentionally no one-command destroy target. Destroying the GKE
-cluster, Cloud SQL instance, secrets, and addresses must be an explicit
-operator action after backups and deletion protection have been reviewed.
+See [architecture](docs/architecture.md) for the boundary and [operations](docs/operations.md) for validation and lifecycle guidance.
