@@ -1,0 +1,11 @@
+{{- range $namespace := list .Values.namespaces.actorEngine .Values.namespaces.kafkaStreams }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: {{ $namespace }}
+spec:
+  mtls:
+    mode: STRICT
+{{- end }}

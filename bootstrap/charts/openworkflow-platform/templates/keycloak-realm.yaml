@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openworkflow-realm
+  namespace: {{ .Values.namespaces.identity }}
+data:
+  openworkflow-realm.json: |
+    {
+      "realm": {{ .Values.identity.realm | quote }},
+      "enabled": true,
+      "registrationAllowed": false,
+      "resetPasswordAllowed": true,
+      "roles": {
+        "realm": [
+          {"name": "openworkflow-user"},
+          {"name": "openworkflow-admin"}
+        ]
+      },
+      "clients": [
+        {
+          "clientId": {{ .Values.identity.publicClientId | quote }},
+          "name": "OpenWorkflow public client",
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": false,
+          "redirectUris": [{{ printf "https://*.%s/*" .Values.rootDomain | quote }}],
+          "webOrigins": [{{ printf "https://*.%s" .Values.rootDomain | quote }}],
+          "protocol": "openid-connect",
+          "protocolMappers": [
+            {
+              "name": "Kafka Streams API audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "oks-api",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
+            {
+              "name": "Actor Engine API audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "consentRequired": false,
+              "config": {
+                "included.client.audience": "openworkflow-actor-engine",
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ]
+    }

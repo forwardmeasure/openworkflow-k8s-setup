@@ -1,0 +1,66 @@
+replicas: {{ .Values.keycloakReplicas }}
+
+image:
+  repository: quay.io/keycloak/keycloak
+  tag: "26.6.4"
+  pullPolicy: IfNotPresent
+
+args: ["start", "--import-realm"]
+
+database:
+  vendor: postgres
+  hostname: {{ .Values.cloudsqlPrivateIp | quote }}
+  port: 5432
+  database: {{ .Values.databases.keycloak | quote }}
+  username: {{ .Values.databaseUsers.keycloak | quote }}
+  existingSecret: keycloak-credentials
+  existingSecretKey: password
+
+extraEnv: |
+  - name: KC_BOOTSTRAP_ADMIN_USERNAME
+    valueFrom:
+      secretKeyRef: {name: keycloak-credentials, key: admin-username}
+  - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+    valueFrom:
+      secretKeyRef: {name: keycloak-credentials, key: admin-password}
+  - name: KC_HOSTNAME
+    value: {{ printf "https://%s" .Values.authHostname | quote }}
+  - name: KC_HOSTNAME_STRICT
+    value: "true"
+  - name: KC_PROXY_HEADERS
+    value: "forwarded"
+
+extraVolumes: |
+  - name: realm-import
+    configMap:
+      name: openworkflow-realm
+
+extraVolumeMounts: |
+  - name: realm-import
+    mountPath: /opt/keycloak/data/import
+    readOnly: true
+
+http:
+  relativePath: /
+
+proxy:
+  enabled: true
+  mode: forwarded
+  http:
+    enabled: true
+
+health:
+  enabled: true
+metrics:
+  enabled: true
+serviceMonitor:
+  enabled: {{ .Values.observability.enabled }}
+  labels:
+    release: kube-prometheus-stack
+
+resources:
+  requests: {cpu: 500m, memory: 1Gi}
+  limits: {memory: 2Gi}
+
+podDisruptionBudget:
+  maxUnavailable: 1

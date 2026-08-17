@@ -1,0 +1,38 @@
+versions:
+  gatewayApi: v1.5.1
+  certManager: v1.21.1
+  istio: 1.30.3
+  externalSecrets: 2.9.0
+  strimzi: 1.1.0
+  keycloakx: 7.2.2
+  kubePrometheusStack: 88.3.0
+
+namespaces:
+  identity: identity
+  kafka: kafka
+  actorEngine: openworkflow-actor-engine
+  kafkaStreams: openworkflow-kafka-streams
+
+gateway:
+  namespace: istio-system
+  name: platform-gateway
+  listenerName: root-https
+
+identity:
+  realm: openworkflow
+  publicClientId: openworkflow-public
+
+kafka:
+  clusterName: kafka-cluster
+  version: 4.3.0
+  metadataVersion: 4.3-IV0
+  controllerReplicas: 3
+  brokerReplicas: 3
+
+observability:
+  enabled: true
+
+externalSecrets:
+  storeName: platform-secret-store
+  serviceAccountAnnotations: {}
+  provider: {}

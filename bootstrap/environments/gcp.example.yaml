@@ -1,0 +1,35 @@
+gcp:
+  projectId: my-openworkflow-project
+
+externalSecrets:
+  storeName: google-secret-manager
+  serviceAccountAnnotations:
+    iam.gke.io/gcp-service-account: openworkflow-external-secrets@my-openworkflow-project.iam.gserviceaccount.com
+  provider:
+    gcpsm:
+      projectID: my-openworkflow-project
+
+rootDomain: openworkflow.example.com
+authHostname: auth.openworkflow.example.com
+gatewayIp: 203.0.113.20
+cloudsqlPrivateIp: 10.30.0.3
+acmeEmail: platform@example.com
+acmeServer: https://acme-staging-v02.api.letsencrypt.org/directory
+keycloakReplicas: 2
+kafkaStorageSize: 100Gi
+
+secrets:
+  keycloakDatabase: openworkflow-keycloak-database
+  keycloakAdmin: openworkflow-keycloak-admin
+  kafkaStreamsDatabase: openworkflow-kafka-streams-database
+  actorEngineDatabase: openworkflow-actor-engine-database
+
+databases:
+  keycloak: keycloak
+  kafkaStreams: openworkflow_kafka_streams
+  actorEngine: openworkflow_actor_engine
+
+databaseUsers:
+  keycloak: keycloak
+  kafkaStreams: openworkflow_kafka
+  actorEngine: openworkflow_actor
