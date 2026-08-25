@@ -45,6 +45,19 @@ run "production_contract" {
         retention_days = 30
       }
     }
+    # Explicit, not relying on the variable's default or a real environment's
+    # terraform.tfvars - this test must stay self-contained regardless of
+    # what real database names change to.
+    databases = {
+      kafka_streams = {
+        database         = "openworkflow_kafka_streams"
+        runtime_username = "openworkflow_kafka"
+      }
+      actor_engine = {
+        database         = "openworkflow_actor_engine"
+        runtime_username = "openworkflow_actor"
+      }
+    }
     workload_identities = {
       runtime = {
         namespace             = "openworkflow"

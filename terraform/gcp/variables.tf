@@ -63,24 +63,121 @@ variable "cluster_administrator_members" {
   }
 }
 
-variable "system_machine_type" {
+variable "node_service_account_roles" {
+  description = "IAM roles granted to the GKE node service account, project-wide."
+  type        = set(string)
+  default = [
+    "roles/cloudsql.client",
+    "roles/storage.admin",
+    "roles/artifactregistry.reader",
+    "roles/artifactregistry.writer",
+    "roles/container.nodeServiceAccount",
+    "roles/storage.objectViewer",
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+    "roles/compute.viewer",
+    "roles/compute.networkUser",
+    "roles/dns.admin",
+    "roles/iam.serviceAccountTokenCreator",
+    "roles/monitoring.viewer",
+    "roles/stackdriver.resourceMetadata.writer",
+  ]
+}
+
+variable "cluster_operating_role_permissions" {
+  description = "Granular permissions bundled into a custom IAM role for CI/automation identities that need narrower access than roles/container.admin (granted via cluster_administrator_members). No role is created if this is empty."
+  type        = list(string)
+  default = [
+    "iam.roles.list",
+    "iam.roles.create",
+    "iam.roles.delete",
+    "compute.networks.create",
+    "compute.projects.get",
+    "container.clusters.get",
+    "container.clusters.list",
+    "container.pods.get",
+    "container.pods.getLogs",
+    "container.pods.list",
+    "container.thirdPartyObjects.create",
+    "container.thirdPartyObjects.delete",
+    "iam.serviceAccounts.create",
+    "resourcemanager.projects.get",
+    "servicemanagement.services.check",
+    "servicemanagement.services.get",
+    "servicemanagement.services.report",
+    "serviceusage.quotas.get",
+    "serviceusage.services.get",
+    "serviceusage.services.list",
+  ]
+}
+
+variable "cluster_operator_members" {
+  description = "Google IAM members bound to the cluster_operating_role_permissions custom role, for example serviceAccount:ci@example.iam.gserviceaccount.com. Separate from cluster_administrator_members, which gets full roles/container.admin instead."
+  type        = set(string)
+  default     = []
+}
+
+variable "node_pools" {
+  description = "GKE node pools, keyed by pool name. Each entry is an independently scaled managed node pool; add, remove, or reshape pools here without touching main.tf. GPU fields are optional and only take effect when gpu_type is set."
+  type = map(object({
+    machine_type       = string
+    image_type         = optional(string, "COS_CONTAINERD")
+    node_locations     = optional(list(string), [])
+    disk_type          = optional(string, "pd-balanced")
+    disk_size_gb       = optional(number, 100)
+    min_node_count     = optional(number, 1)
+    max_node_count     = optional(number, 3)
+    initial_node_count = optional(number)
+    preemptible        = optional(bool, false)
+    spot               = optional(bool, false)
+    local_ssd_count    = optional(number, 0)
+    # Separate from local_ssd_count above (the legacy node_config attribute):
+    # some machine types (e.g. a3-highgpu-1g) have local NVMe SSDs baked
+    # into the hardware shape, which GCP reports back via the newer
+    # ephemeral_storage_local_ssd_config block regardless of what's
+    # declared. Leave this null for pools with no mandatory local SSDs -
+    # setting it only where GCP's own live state requires it avoids a
+    # perpetual destroy/recreate loop (declared vs enforced never
+    # converging).
+    ephemeral_storage_local_ssd_count = optional(number)
+    labels                            = optional(map(string), {})
+    tags                              = optional(list(string), [])
+    taints = optional(list(object({
+      key    = string
+      value  = string
+      effect = string
+    })), [])
+    gpu_type           = optional(string)
+    gpu_count          = optional(number, 1)
+    gpu_driver_version = optional(string, "DEFAULT")
+  }))
+
+  default = {
+    system = {
+      machine_type   = "e2-standard-4"
+      min_node_count = 3
+      max_node_count = 3
+      disk_size_gb   = 100
+      labels         = { "openworkflow.io/pool" = "system" }
+    }
+    workloads = {
+      machine_type   = "e2-standard-8"
+      min_node_count = 3
+      max_node_count = 9
+      disk_size_gb   = 200
+      labels         = { "openworkflow.io/pool" = "workloads" }
+    }
+  }
+
+  validation {
+    condition     = alltrue([for pool in values(var.node_pools) : pool.min_node_count <= pool.max_node_count])
+    error_message = "Every node pool's min_node_count must be less than or equal to its max_node_count."
+  }
+}
+
+variable "cloudsql_version" {
   type    = string
-  default = "e2-standard-4"
-}
-
-variable "workload_machine_type" {
-  type    = string
-  default = "e2-standard-8"
-}
-
-variable "system_node_count" {
-  type    = number
-  default = 3
-}
-
-variable "workload_node_count" {
-  type    = number
-  default = 3
+  default = "POSTGRES_17"
 }
 
 variable "cloudsql_tier" {
@@ -130,11 +227,25 @@ variable "database_administrator_username" {
 variable "workload_identities" {
   description = "Cloud IAM identities to create for Kubernetes service accounts owned by the downstream deployment layer."
   type = map(object({
-    namespace                   = string
-    service_account             = string
+    namespace       = string
+    service_account = string
+    # Extra (namespace, service_account) pairs impersonating this same GSA -
+    # e.g. model-serving's GSA is annotated onto both the model-cache and
+    # docling KSAs in forwardmeasure-platform, since docling shares the same
+    # model service account rather than getting its own.
+    additional_bindings = optional(list(object({
+      namespace       = string
+      service_account = string
+    })), [])
     bucket_keys                 = optional(set(string), [])
     administrator_database_keys = optional(set(string), [])
     runtime_database_keys       = optional(set(string), [])
+    # Project-level IAM roles this identity needs beyond bucket/database
+    # access - e.g. roles/dns.admin for cert-manager's DNS-01 solver,
+    # roles/secretmanager.secretAccessor for external-secrets. Most
+    # identities need none of this; it's for platform-level workloads that
+    # aren't scoped to a single declared bucket or database.
+    project_roles = optional(set(string), [])
   }))
   default = {}
 }
@@ -149,4 +260,14 @@ variable "buckets" {
     labels         = optional(map(string), {})
   }))
   default = {}
+}
+
+variable "dns_zone_name" {
+  description = "Cloud DNS managed zone (GCP resource name, not the domain itself) that resolves this cluster's public hostnames. Already exists - never created by this module, only read via data source."
+  type        = string
+}
+
+variable "gateway_static_ip_name" {
+  description = "Reserved external IP address (GCP resource name) that the platform Gateway's LoadBalancer service binds to. Already exists - never created by this module, only read via data source."
+  type        = string
 }

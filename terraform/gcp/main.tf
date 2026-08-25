@@ -32,6 +32,37 @@ locals {
       ]
     ]) : binding.key => binding
   }
+  workload_project_role_bindings = {
+    for binding in flatten([
+      for identity_key, identity in var.workload_identities : [
+        for role in identity.project_roles : {
+          key          = "${identity_key}:${role}"
+          identity_key = identity_key
+          role         = role
+        }
+      ]
+    ]) : binding.key => binding
+  }
+  workload_identity_bindings = {
+    for binding in flatten([
+      for identity_key, identity in var.workload_identities : concat(
+        [{
+          key             = "${identity_key}:primary"
+          identity_key    = identity_key
+          namespace       = identity.namespace
+          service_account = identity.service_account
+        }],
+        [
+          for extra in identity.additional_bindings : {
+            key             = "${identity_key}:${extra.namespace}/${extra.service_account}"
+            identity_key    = identity_key
+            namespace       = extra.namespace
+            service_account = extra.service_account
+          }
+        ]
+      )
+    ]) : binding.key => binding
+  }
 }
 
 resource "google_project_service" "required" {
@@ -94,16 +125,10 @@ resource "google_service_account" "gke_nodes" {
 }
 
 resource "google_project_iam_member" "gke_nodes" {
-  for_each = toset([
-    "roles/artifactregistry.reader",
-    "roles/logging.logWriter",
-    "roles/monitoring.metricWriter",
-    "roles/monitoring.viewer",
-    "roles/stackdriver.resourceMetadata.writer",
-  ])
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+  for_each = var.node_service_account_roles
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.gke_nodes.email}"
 }
 
 resource "google_project_iam_member" "gke_administrators" {
@@ -111,6 +136,22 @@ resource "google_project_iam_member" "gke_administrators" {
 
   project = var.project_id
   role    = "roles/container.admin"
+  member  = each.value
+}
+
+resource "google_project_iam_custom_role" "cluster_operator" {
+  count       = length(var.cluster_operating_role_permissions) > 0 ? 1 : 0
+  project     = var.project_id
+  role_id     = replace("${var.name}_cluster_operator", "-", "_")
+  title       = "${var.name} Cluster Operator"
+  permissions = var.cluster_operating_role_permissions
+}
+
+resource "google_project_iam_member" "cluster_operators" {
+  for_each = var.cluster_operator_members
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.cluster_operator[0].id
   member  = each.value
 }
 
@@ -157,67 +198,79 @@ resource "google_container_cluster" "platform" {
     gce_persistent_disk_csi_driver_config {
       enabled = true
     }
+    # model-cache PV (releases/kserve-runtime-configs and model-serving's
+    # own PVC) references driver: gcsfuse.csi.storage.gke.io - naming a
+    # driver in a PV spec doesn't install it. Without this, no
+    # gcsfuse.csi.storage.gke.io CSIDriver is ever registered on the
+    # cluster at all, and any pod mounting that PVC hangs on
+    # FailedAttachVolume forever - confirmed the hard way against the
+    # gliner InferenceService.
+    gcs_fuse_csi_driver_config {
+      enabled = true
+    }
   }
 
   depends_on = [google_compute_router_nat.platform, google_project_iam_member.gke_nodes]
 }
 
-resource "google_container_node_pool" "system" {
-  project    = var.project_id
-  name       = "system"
-  location   = var.region
-  cluster    = google_container_cluster.platform.name
-  node_count = var.system_node_count
+resource "google_container_node_pool" "pools" {
+  for_each = var.node_pools
+
+  project        = var.project_id
+  name           = each.key
+  location       = var.region
+  cluster        = google_container_cluster.platform.name
+  node_count     = coalesce(each.value.initial_node_count, each.value.min_node_count)
+  node_locations = length(each.value.node_locations) > 0 ? each.value.node_locations : null
 
   autoscaling {
-    total_min_node_count = var.system_node_count
-    total_max_node_count = max(var.system_node_count, 3)
+    total_min_node_count = each.value.min_node_count
+    total_max_node_count = each.value.max_node_count
   }
   management {
     auto_repair  = true
     auto_upgrade = true
   }
   node_config {
-    machine_type    = var.system_machine_type
-    disk_type       = "pd-balanced"
-    disk_size_gb    = 100
-    image_type      = "COS_CONTAINERD"
+    machine_type    = each.value.machine_type
+    disk_type       = each.value.disk_type
+    disk_size_gb    = each.value.disk_size_gb
+    image_type      = each.value.image_type
     service_account = google_service_account.gke_nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
-    labels          = { "openworkflow.io/pool" = "system" }
-    workload_metadata_config {
-      mode = "GKE_METADATA"
-    }
-    shielded_instance_config {
-      enable_integrity_monitoring = true
-      enable_secure_boot          = true
-    }
-  }
-}
+    labels          = each.value.labels
+    tags            = each.value.tags
+    preemptible     = each.value.preemptible
+    spot            = each.value.spot
+    local_ssd_count = each.value.local_ssd_count
 
-resource "google_container_node_pool" "workloads" {
-  project    = var.project_id
-  name       = "workloads"
-  location   = var.region
-  cluster    = google_container_cluster.platform.name
-  node_count = var.workload_node_count
+    dynamic "taint" {
+      for_each = each.value.taints
+      content {
+        key    = taint.value.key
+        value  = taint.value.value
+        effect = taint.value.effect
+      }
+    }
 
-  autoscaling {
-    total_min_node_count = var.workload_node_count
-    total_max_node_count = max(var.workload_node_count, 9)
-  }
-  management {
-    auto_repair  = true
-    auto_upgrade = true
-  }
-  node_config {
-    machine_type    = var.workload_machine_type
-    disk_type       = "pd-balanced"
-    disk_size_gb    = 200
-    image_type      = "COS_CONTAINERD"
-    service_account = google_service_account.gke_nodes.email
-    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
-    labels          = { "openworkflow.io/pool" = "workloads" }
+    dynamic "ephemeral_storage_local_ssd_config" {
+      for_each = each.value.ephemeral_storage_local_ssd_count != null ? [each.value.ephemeral_storage_local_ssd_count] : []
+      content {
+        local_ssd_count = ephemeral_storage_local_ssd_config.value
+      }
+    }
+
+    dynamic "guest_accelerator" {
+      for_each = each.value.gpu_type != null ? [each.value] : []
+      content {
+        type  = guest_accelerator.value.gpu_type
+        count = guest_accelerator.value.gpu_count
+        gpu_driver_installation_config {
+          gpu_driver_version = guest_accelerator.value.gpu_driver_version
+        }
+      }
+    }
+
     workload_metadata_config {
       mode = "GKE_METADATA"
     }
@@ -247,7 +300,7 @@ resource "google_sql_database_instance" "platform" {
   project             = var.project_id
   name                = "${var.name}-postgres"
   region              = var.region
-  database_version    = "POSTGRES_17"
+  database_version    = var.cloudsql_version
   deletion_protection = var.deletion_protection
 
   settings {
@@ -367,11 +420,26 @@ resource "google_service_account" "workload" {
 }
 
 resource "google_service_account_iam_member" "workload_identity" {
-  for_each = var.workload_identities
+  for_each = local.workload_identity_bindings
 
-  service_account_id = google_service_account.workload[each.key].name
+  service_account_id = google_service_account.workload[each.value.identity_key].name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[${each.value.namespace}/${each.value.service_account}]"
+
+  # member is built from var.project_id alone, so Terraform sees no implicit
+  # dependency on the cluster even though the workload_pool it references is
+  # only created as part of google_container_cluster.platform's
+  # workload_identity_config. Without this, the binding can race the
+  # cluster's creation and fail with "Identity Pool does not exist".
+  depends_on = [google_container_cluster.platform]
+}
+
+resource "google_project_iam_member" "workload_project_roles" {
+  for_each = local.workload_project_role_bindings
+
+  project = var.project_id
+  role    = each.value.role
+  member  = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
 }
 
 resource "google_storage_bucket_iam_member" "workload" {
@@ -401,6 +469,36 @@ resource "google_secret_manager_secret_iam_member" "workload_database_runtime" {
   secret_id = google_secret_manager_secret.database_runtime[each.value.database_key].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
+}
+
+# Both the zone and the IP already exist outside this module (confirmed via
+# `gcloud dns managed-zones list` / `gcloud compute addresses list`) - data
+# sources only, never created/imported here. The record itself is the one
+# piece that was genuinely missing: the platform Gateway's own HTTPRoutes
+# match on wildcard hostnames (e.g. forwardmeasure-platform's own
+# gateway.tenantHost = *.<domain>), but nothing had ever created the DNS
+# record backing that wildcard - confirmed the hard way, every subdomain
+# (platform., auth., registry., search., analytics., studio.) came back
+# NXDOMAIN despite the Gateway itself being correctly programmed and
+# healthy.
+data "google_dns_managed_zone" "platform" {
+  project = var.project_id
+  name    = var.dns_zone_name
+}
+
+data "google_compute_address" "gateway" {
+  project = var.project_id
+  region  = var.region
+  name    = var.gateway_static_ip_name
+}
+
+resource "google_dns_record_set" "wildcard" {
+  project      = var.project_id
+  managed_zone = data.google_dns_managed_zone.platform.name
+  name         = "*.${data.google_dns_managed_zone.platform.dns_name}"
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [data.google_compute_address.gateway.address]
 }
 
 check "database_names_are_unique" {
