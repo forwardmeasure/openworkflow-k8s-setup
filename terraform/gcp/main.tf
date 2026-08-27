@@ -63,6 +63,11 @@ locals {
       )
     ]) : binding.key => binding
   }
+  platform_keycloak_secrets = toset([
+    "admin-password",
+    "bootstrap-password",
+    "confidential-client-secret",
+  ])
 }
 
 resource "google_project_service" "required" {
@@ -387,6 +392,47 @@ resource "google_secret_manager_secret_version" "database_runtime" {
 
   secret      = google_secret_manager_secret.database_runtime[each.key].id
   secret_data = random_password.database_runtime[each.key].result
+}
+
+# Application-level secrets outside this stack's normal cluster/network/IAM/
+# CloudSQL scope (see this repository's own README: "does not install...
+# Kubernetes application secrets"). These three are a deliberate, narrow
+# exception - the Keycloak Helm chart deployed on top of this cluster reads
+# them by name (platform-keycloak-admin-password -> KEYCLOAK_ADMIN_PASSWORD,
+# platform-keycloak-bootstrap-password -> the in-realm bootstrap user's
+# password, platform-keycloak-confidential-client-secret -> the
+# forwardmeasure confidential client's OAuth secret, reused verbatim by
+# Superset's own OIDC_CLIENT_SECRET), and there was previously no Terraform
+# anywhere generating real values for them - only the literal string
+# "CHANGE-ME-dev-placeholder" in the gitignored fake ClusterSecretStore data
+# file. KEYCLOAK_ADMIN (the username) is not included here - it is not a
+# secret and is set as a literal value directly in that same file, matching
+# how platform-keycloak-database-username ("keycloak") and
+# platform-superset-database-username ("superset") are already handled.
+resource "random_password" "platform_keycloak" {
+  for_each = local.platform_keycloak_secrets
+  length   = 40
+  special  = false
+}
+
+resource "google_secret_manager_secret" "platform_keycloak" {
+  for_each = local.platform_keycloak_secrets
+
+  project   = var.project_id
+  secret_id = "${var.name}-platform-keycloak-${each.key}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "platform_keycloak" {
+  for_each = local.platform_keycloak_secrets
+
+  secret      = google_secret_manager_secret.platform_keycloak[each.key].id
+  secret_data = random_password.platform_keycloak[each.key].result
 }
 
 resource "google_storage_bucket" "platform" {
