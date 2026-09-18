@@ -284,6 +284,14 @@ resource "google_container_node_pool" "pools" {
       enable_secure_boot          = true
     }
   }
+
+  # node_count only sets the pool's size at creation. Once autoscaling is enabled, the
+  # cluster autoscaler continuously reconciles the real count, so node_count drifts from
+  # whatever this config says on every subsequent plan/apply. Ignore it here rather than
+  # fight the autoscaler.
+  lifecycle {
+    ignore_changes = [node_count]
+  }
 }
 
 resource "google_compute_global_address" "private_services" {
