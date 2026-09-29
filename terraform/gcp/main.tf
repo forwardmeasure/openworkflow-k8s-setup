@@ -360,6 +360,38 @@ resource "google_sql_user" "database_administrator" {
   password = random_password.database_administrator.result
 }
 
+# Platform components' own login roles - see var.cloudsql_users. Mirrors
+# forwardmeasure-platform/k8s-infrastructure/opentofu/gcp/modules/cloudsql's google_sql_user.users.
+resource "google_sql_user" "components" {
+  for_each = var.cloudsql_users
+
+  project             = var.project_id
+  instance            = google_sql_database_instance.platform.name
+  name                = each.key
+  type                = "BUILT_IN"
+  password_wo         = lookup(var.cloudsql_user_passwords, each.key, null)
+  password_wo_version = each.value.password_version
+  deletion_policy     = each.value.deletion_policy
+
+  lifecycle {
+    precondition {
+      condition     = contains(keys(var.cloudsql_user_passwords), each.key)
+      error_message = "Every configured Cloud SQL user requires an ephemeral value in cloudsql_user_passwords."
+    }
+  }
+
+  depends_on = [google_sql_database.platform]
+}
+
+# Roles that existed before Terraform managed them (prod's keycloak/superset were created by
+# openworkflow-migrations) are adopted instead of created. The first apply after import still sends
+# the password from cloudsql_user_passwords, so it must be the value the component already uses.
+import {
+  for_each = var.cloudsql_existing_users
+  to       = google_sql_user.components[each.value]
+  id       = "${var.project_id}/${var.name}-postgres/${each.value}"
+}
+
 resource "random_password" "database_runtime" {
   for_each = var.databases
   length   = 40

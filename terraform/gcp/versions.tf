@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.8.0"
+  # 1.11: ephemeral variables and write-only attributes (cloudsql_user_passwords / password_wo).
+  required_version = ">= 1.11.0"
 
   required_providers {
     google = {

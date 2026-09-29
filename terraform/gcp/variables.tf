@@ -206,22 +206,49 @@ variable "databases" {
     database         = string
     runtime_username = string
   }))
+  # The control-plane database only - no product has a database of its own. Tenant databases
+  # (forwardmeasure_<alias>) and every product's runtime role are created by the migration Jobs.
   default = {
-    kafka_streams = {
-      database         = "openworkflow_kafka_streams"
-      runtime_username = "openworkflow_kafka"
-    }
-    actor_engine = {
-      database         = "openworkflow_actor_engine"
-      runtime_username = "openworkflow_actor"
+    forwardmeasure_control_plane = {
+      database         = "forwardmeasure_control_plane"
+      runtime_username = "forwardmeasure_control_plane"
     }
   }
+}
+
+# Same rule and shape as forwardmeasure-platform's k8s-infrastructure/opentofu/gcp cloudsql_users:
+# Terraform creates the login role of every platform component that owns its own database, because
+# those components install before any migration Job runs. Product runtime roles (openworkflow,
+# entityintelligence, decision_engine) are created by the migration Jobs, never here. Onboarding a
+# new component (e.g. Apache Pinot) is one entry here plus its database in var.databases.
+variable "cloudsql_users" {
+  description = "Built-in PostgreSQL users for platform components and write-only password revision numbers."
+  type = map(object({
+    password_version = optional(number, 1)
+    deletion_policy  = optional(string, "ABANDON")
+  }))
+  # Empty, like the databases default (control plane only): a user belongs next to its database.
+  default = {}
+}
+
+variable "cloudsql_user_passwords" {
+  description = "Passwords keyed by cloudsql_users - each must be the component's own database password (the value its chart reads). Supply only at plan/apply time; values are write-only and are not persisted in state."
+  type        = map(string)
+  sensitive   = true
+  ephemeral   = true
+  default     = {}
+}
+
+variable "cloudsql_existing_users" {
+  description = "cloudsql_users entries that already exist on the instance (created before Terraform managed them) and must be imported rather than created."
+  type        = set(string)
+  default     = []
 }
 
 variable "database_administrator_username" {
   description = "Cloud SQL administrator used only by database migration and runtime-role provisioning."
   type        = string
-  default     = "openworkflow_migration"
+  default     = "forwardmeasure_admin"
 }
 
 variable "workload_identities" {

@@ -66,6 +66,16 @@ Do not deploy an application using `database_administrator_usernames`. The datab
 
 Only after this succeeds may the runtime deployment resolve its `runtime_database_keys` secret. The infrastructure output deliberately reports `database_role_provisioning_required = true` on every cloud.
 
+**Deliberate exception - platform components (`cloudsql_users`).** Keycloak, Superset and any
+later component that owns its own database (e.g. Apache Pinot) install before any migration Job
+runs, so Terraform creates their login roles (`cloudsql_users`, passwords supplied write-only via
+`TF_VAR_cloudsql_user_passwords` and never stored in state). The same rule and variables are used in
+forwardmeasure-platform's OpenTofu. Cloud SQL makes every API-created user a member of
+`cloudsqlsuperuser` with `CREATEROLE`/`CREATEDB`, so these roles do not meet step 8 - accepted
+(2026-09-29) as a consistent, reusable pattern until it proves insufficient; the stricter alternative
+is Cloud SQL IAM database users plus a grant-only bootstrap Job. Product runtime roles (openworkflow,
+entityintelligence, decision_engine) still follow steps 1-8 above via their migration Jobs.
+
 ## Workload identity handoff
 
 The example configuration creates separate `runtime` and `migrations` cloud identities. The cloud stack does not create their Kubernetes service accounts. The deployment repository must create the exact namespace/service-account pair from the output and apply the provider annotation:
