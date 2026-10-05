@@ -53,7 +53,14 @@ locals {
           service_account = identity.service_account
         }],
         [
-          for extra in identity.additional_bindings : {
+          # The dispatcher has its own Kubernetes identity and RBAC, while sharing
+          # the runtime GSA's SQL/storage access. Deduplicate explicit bindings.
+          for extra in distinct(concat(identity.additional_bindings,
+            identity.service_account == "openworkflow-runtime" ? [{
+              namespace       = identity.namespace
+              service_account = "openworkflow-operation-adapter"
+            }] : []
+            )) : {
             key             = "${identity_key}:${extra.namespace}/${extra.service_account}"
             identity_key    = identity_key
             namespace       = extra.namespace
