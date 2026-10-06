@@ -75,6 +75,31 @@ locals {
     "bootstrap-password",
     "confidential-client-secret",
   ])
+  # Other platform components' generated secrets, by name and length - see platform_application below.
+  platform_application_secrets = {
+    "superset-secret-key"       = 64
+    "superset-admin-password"   = 40
+    "opensearch-admin-password" = 40
+    "opensearch-admin-cookie"   = 40
+    "valkey-password"           = 40
+    # Stable, independent HMAC key for human-task review session credentials (minimum 32 bytes).
+    "openworkflow-human-task-review-secret" = 64
+    # Keycloak's openworkflow client secret (realm import + every OpenWorkflow service).
+    "openworkflow-client-secret"                         = 40
+    "openworkflow-platform-operator-client-secret"       = 40
+    "openworkflow-workflow-publisher-client-secret"      = 40
+    "openworkflow-apicurio-reader-client-secret"         = 40
+    "data-streaming-client-secret"                       = 40
+    "entity-intelligence-client-secret"                  = 40
+    "entity-intelligence-launcher-client-secret"         = 40
+    "entity-intelligence-ingestion-worker-client-secret" = 40
+    "entity-intelligence-screening-worker-client-secret" = 40
+    # Product runtime roles: each product's migration Job runs ensureRuntimeRole, which CREATEs the
+    # role if missing and ALTERs its password to this value on every run, so role and secret agree.
+    "openworkflow-runtime-database-password"        = 40
+    "entity-intelligence-runtime-database-password" = 40
+    "decision-engine-runtime-database-password"     = 40
+  }
 }
 
 resource "google_project_service" "required" {
@@ -372,18 +397,23 @@ resource "google_sql_user" "database_administrator" {
 resource "google_sql_user" "components" {
   for_each = var.cloudsql_users
 
-  project             = var.project_id
-  instance            = google_sql_database_instance.platform.name
-  name                = each.key
-  type                = "BUILT_IN"
-  password_wo         = lookup(var.cloudsql_user_passwords, each.key, null)
+  project  = var.project_id
+  instance = google_sql_database_instance.platform.name
+  name     = each.key
+  type     = "BUILT_IN"
+  # A component with a databases entry logs in with the runtime password this module generates and
+  # stores as <name>-<component>-runtime in Secret Manager - the value its chart reads. Setting the
+  # role from that same value keeps them equal by construction; a separately supplied password let
+  # them drift (prod's keycloak role was set from a typed-in value, so Keycloak couldn't log in).
+  # cloudsql_user_passwords remains only for a component with no databases entry.
+  password_wo         = try(random_password.database_runtime[each.key].result, lookup(var.cloudsql_user_passwords, each.key, null))
   password_wo_version = each.value.password_version
   deletion_policy     = each.value.deletion_policy
 
   lifecycle {
     precondition {
-      condition     = contains(keys(var.cloudsql_user_passwords), each.key)
-      error_message = "Every configured Cloud SQL user requires an ephemeral value in cloudsql_user_passwords."
+      condition     = contains(keys(var.databases), each.key) || contains(keys(var.cloudsql_user_passwords), each.key)
+      error_message = "A Cloud SQL user needs a databases entry (its generated runtime password) or an ephemeral value in cloudsql_user_passwords."
     }
   }
 
@@ -480,6 +510,60 @@ resource "google_secret_manager_secret_version" "platform_keycloak" {
 
   secret      = google_secret_manager_secret.platform_keycloak[each.key].id
   secret_data = random_password.platform_keycloak[each.key].result
+}
+
+# Superset's, OpenSearch's, Valkey's, the openworkflow client's and the product runtime roles' generated secrets - same reasoning as platform_keycloak above:
+# their charts read them by name, and nothing else generated real values (the fake store held
+# "CHANGE-ME-dev-placeholder"). Usernames, emails and hosts aren't secrets and stay literals in the
+# fake store data file.
+resource "random_password" "platform_application" {
+  for_each = local.platform_application_secrets
+  length   = each.value
+  special  = false
+}
+
+resource "google_secret_manager_secret" "platform_application" {
+  for_each = local.platform_application_secrets
+
+  project   = var.project_id
+  secret_id = "${var.name}-platform-${each.key}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "platform_application" {
+  for_each = local.platform_application_secrets
+
+  secret      = google_secret_manager_secret.platform_application[each.key].id
+  secret_data = random_password.platform_application[each.key].result
+}
+
+# OpenSearch's security index stores a bcrypt hash of the admin password, never the password. bcrypt()
+# salts randomly on every evaluation, so the stored hash is written once and replaced only when the
+# password itself is regenerated.
+resource "google_secret_manager_secret" "platform_opensearch_admin_password_hash" {
+  project   = var.project_id
+  secret_id = "${var.name}-platform-opensearch-admin-password-hash"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret_version" "platform_opensearch_admin_password_hash" {
+  secret      = google_secret_manager_secret.platform_opensearch_admin_password_hash.id
+  secret_data = bcrypt(random_password.platform_application["opensearch-admin-password"].result, 12)
+
+  lifecycle {
+    ignore_changes       = [secret_data]
+    replace_triggered_by = [random_password.platform_application["opensearch-admin-password"]]
+  }
 }
 
 resource "google_storage_bucket" "platform" {

@@ -45,3 +45,5 @@ Replace `gcp` with `aws` or `azure` for the other stacks. Replace every document
 Each stack exports provider-specific outputs plus a common sensitive `deployment_handoff` object containing cluster, database, object-storage, secret-reference, and workload-identity metadata. Secret values are not exposed as outputs. Generated GCP and Azure passwords and runtime-role passwords still exist in OpenTofu state, so production state must use an encrypted remote backend with tightly restricted access. AWS database-administrator passwords are generated and managed directly by RDS.
 
 See [architecture](docs/architecture.md) for the boundary and [operations](docs/operations.md) for validation and lifecycle guidance.
+
+make CLOUD=gcp infra-apply

@@ -68,8 +68,11 @@ Only after this succeeds may the runtime deployment resolve its `runtime_databas
 
 **Deliberate exception - platform components (`cloudsql_users`).** Keycloak, Superset and any
 later component that owns its own database (e.g. Apache Pinot) install before any migration Job
-runs, so Terraform creates their login roles (`cloudsql_users`, passwords supplied write-only via
-`TF_VAR_cloudsql_user_passwords` and never stored in state). The same rule and variables are used in
+runs, so Terraform creates their login roles (`cloudsql_users`). A component with a `databases`
+entry gets the runtime password this module generates and stores as `<name>-<component>-runtime` -
+the value its chart reads - so role and deployment can't drift. `TF_VAR_cloudsql_user_passwords`
+(write-only, never stored in state) is only for a component with no `databases` entry. To rotate,
+bump that user's `password_version`. The same rule and variables are used in
 forwardmeasure-platform's OpenTofu. Cloud SQL makes every API-created user a member of
 `cloudsqlsuperuser` with `CREATEROLE`/`CREATEDB`, so these roles do not meet step 8 - accepted
 (2026-09-29) as a consistent, reusable pattern until it proves insufficient; the stricter alternative
