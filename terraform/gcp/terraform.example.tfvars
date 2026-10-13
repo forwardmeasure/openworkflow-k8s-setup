@@ -13,6 +13,15 @@ buckets = {
     versioning     = true
     retention_days = 30
   }
+  fei_input_documents = {
+    name = "your-project-fei-input-documents"
+  }
+  fei_output_documents = {
+    name = "your-project-fei-output-documents"
+  }
+  fei_evidence = {
+    name = "your-project-fei-evidence"
+  }
 }
 
 # The platform control-plane database (tenant_registry, Pekko's cluster-wide coordinator store) plus
@@ -63,9 +72,11 @@ workload_identities = {
   # the entityintelligence role, no database of its own. Account id is truncated to 30 characters:
   # <name>-entity-intel.
   entity_intelligence = {
-    namespace       = "entity-intelligence"
-    service_account = "entity-intelligence"
-    project_roles   = ["roles/cloudsql.client"]
+    namespace          = "entity-intelligence"
+    service_account    = "entity-intelligence"
+    project_roles      = ["roles/cloudsql.client"]
+    bucket_keys        = ["fei_output_documents", "fei_evidence"]
+    reader_bucket_keys = ["fei_input_documents"]
   }
   # forwardmeasure-decision-engine's gRPC server - its Cloud SQL Auth Proxy sidecar connects to the
   # platform control-plane database (tenant_registry) and each tenant's database as the

@@ -264,7 +264,9 @@ variable "workload_identities" {
       namespace       = string
       service_account = string
     })), [])
-    bucket_keys                 = optional(set(string), [])
+    bucket_keys = optional(set(string), [])
+    # Buckets this identity may only read (roles/storage.objectViewer); bucket_keys grant read/write.
+    reader_bucket_keys          = optional(set(string), [])
     administrator_database_keys = optional(set(string), [])
     runtime_database_keys       = optional(set(string), [])
     # Project-level IAM roles this identity needs beyond bucket/database

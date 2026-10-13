@@ -10,6 +10,17 @@ locals {
   ])
   pods_range_name     = "${var.name}-pods"
   services_range_name = "${var.name}-services"
+  workload_bucket_reader_bindings = {
+    for binding in flatten([
+      for identity_key, identity in var.workload_identities : [
+        for bucket_key in identity.reader_bucket_keys : {
+          key          = "${identity_key}:${bucket_key}"
+          identity_key = identity_key
+          bucket_key   = bucket_key
+        }
+      ]
+    ]) : binding.key => binding
+  }
   workload_bucket_bindings = {
     for binding in flatten([
       for identity_key, identity in var.workload_identities : [
@@ -629,6 +640,14 @@ resource "google_storage_bucket_iam_member" "workload" {
   member = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
 }
 
+resource "google_storage_bucket_iam_member" "workload_reader" {
+  for_each = local.workload_bucket_reader_bindings
+
+  bucket = google_storage_bucket.platform[each.value.bucket_key].name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload[each.value.identity_key].email}"
+}
+
 resource "google_secret_manager_secret_iam_member" "workload_database_administrator" {
   for_each = {
     for key, value in var.workload_identities : key => value
@@ -698,7 +717,7 @@ check "workload_bucket_keys_exist" {
   assert {
     condition = alltrue(flatten([
       for identity in values(var.workload_identities) : [
-        for bucket_key in identity.bucket_keys : contains(keys(var.buckets), bucket_key)
+        for bucket_key in setunion(identity.bucket_keys, identity.reader_bucket_keys) : contains(keys(var.buckets), bucket_key)
       ]
     ]))
     error_message = "Every workload identity bucket key must identify a declared bucket."
