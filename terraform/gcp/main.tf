@@ -112,6 +112,7 @@ locals {
     "openworkflow-runtime-database-password"        = 40
     "entity-intelligence-runtime-database-password" = 40
     "decision-engine-runtime-database-password"     = 40
+    "data-streaming-runtime-database-password"      = 40
   }
 }
 
