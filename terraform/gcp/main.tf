@@ -107,12 +107,23 @@ locals {
     "entity-intelligence-launcher-client-secret"         = 40
     "entity-intelligence-ingestion-worker-client-secret" = 40
     "entity-intelligence-screening-worker-client-secret" = 40
+    # forwardmeasure-agent-ensemble's Indexical: its AuthZEN resource server and its OpenWorkflow
+    # caller (platform.identity.serviceClients.indexical / indexicalLauncher).
+    "indexical-client-secret"          = 40
+    "indexical-launcher-client-secret" = 40
+    # Indexical's FEI admission caller (platform.identity.serviceClients.indexicalEvidenceAdmission).
+    "indexical-evidence-admission-client-secret" = 40
     # Product runtime roles: each product's migration Job runs ensureRuntimeRole, which CREATEs the
     # role if missing and ALTERs its password to this value on every run, so role and secret agree.
-    "openworkflow-runtime-database-password"        = 40
+    "openworkflow-runtime-database-password" = 40
+    # forwardmeasure-openworkflow's tenant-access role: the only writer of each tenant database's
+    # identity.actor (provisioned by its migrations Job, used by the tenant-access reconciliation).
+    "openworkflow-tenant-access-database-password"  = 40
     "entity-intelligence-runtime-database-password" = 40
     "decision-engine-runtime-database-password"     = 40
     "data-streaming-runtime-database-password"      = 40
+    # forwardmeasure-agent-ensemble's runtime role (agent_ensemble), created by its migrations Job.
+    "agent-ensemble-runtime-database-password" = 40
   }
 }
 

@@ -72,7 +72,7 @@ workload_identities = {
   # the entityintelligence role, no database of its own. Account id is truncated to 30 characters:
   # <name>-entity-intel.
   entity_intelligence = {
-    namespace          = "entity-intelligence"
+    namespace          = "forwardmeasure-entity-intelligence"
     service_account    = "entity-intelligence"
     project_roles      = ["roles/cloudsql.client"]
     bucket_keys        = ["fei_output_documents", "fei_evidence"]
@@ -84,7 +84,7 @@ workload_identities = {
   # its own, so no runtime/administrator database keys. Account id is truncated to 30 characters:
   # <name>-decision-eng.
   decision_engine = {
-    namespace       = "decision-engine"
+    namespace       = "forwardmeasure-decision-engine"
     service_account = "decision-engine"
     project_roles   = ["roles/cloudsql.client"]
   }
