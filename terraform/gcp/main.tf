@@ -100,6 +100,7 @@ locals {
     "openworkflow-platform-operator-client-secret"       = 40
     "openworkflow-workflow-publisher-client-secret"      = 40
     "openworkflow-apicurio-reader-client-secret"         = 40
+    "openworkflow-human-task-membership-client-secret"   = 40 # Human Task management's read-only membership client
     "decision-engine-client-secret"                      = 40
     "decision-engine-evaluator-client-secret"            = 40
     "data-streaming-client-secret"                       = 40
